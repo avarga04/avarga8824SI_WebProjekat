@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import pool from '../utils/db';
 import { CategoryDb, CreateCategoryRequest, UpdateCategoryRequest } from '../types/categoryTypes';
 
-// Dohvati sve kategorije
+// dohvati sve kategorije
 export const getAllCategories = async (req: Request, res: Response): Promise<void> => {
     try {
         const [categories] = await pool.query(
@@ -15,7 +15,7 @@ export const getAllCategories = async (req: Request, res: Response): Promise<voi
     }
 };
 
-// Dohvati jednu kategoriju
+// dohvati jednu kategoriju
 export const getCategoryById = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     
@@ -37,7 +37,7 @@ export const getCategoryById = async (req: Request, res: Response): Promise<void
     }
 };
 
-// Kreiraj novu kategoriju
+// kreiraj novu kategoriju
 export const createCategory = async (req: Request, res: Response): Promise<void> => {
     const { name, description }: CreateCategoryRequest = req.body;
     
@@ -78,7 +78,7 @@ export const createCategory = async (req: Request, res: Response): Promise<void>
     }
 };
 
-// Izmeni kategoriju
+// izmeni kategoriju
 export const updateCategory = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     const { name, description }: UpdateCategoryRequest = req.body;
@@ -146,7 +146,7 @@ export const updateCategory = async (req: Request, res: Response): Promise<void>
     }
 };
 
-// Obriši kategoriju
+// obrisi kategoriju
 export const deleteCategory = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
     
