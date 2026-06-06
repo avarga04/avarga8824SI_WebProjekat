@@ -50,7 +50,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
             { expiresIn: '7d' }
         );
         
-        res.cookie('token', token, {
+        res.cookie(' token', token, {
             httpOnly: true,
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
@@ -125,22 +125,28 @@ export const createUser = async (req: Request, res: Response): Promise<void> => 
         return;
     }
 
+    const connection = await pool.getConnection();
+
     try {
-        const [existingUsers] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
+        await connection.beginTransaction();
+        const [existingUsers] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
         const existingRows = existingUsers as any[];
 
         if (existingRows.length > 0) {
+            await connection.rollback();
             res.status(409).json({ error: 'Korisnik sa ovim email-om već postoji' });
             return;
         }
 
         const passwordHash = hashPassword(password);
 
-        const [result] = await pool.query(
+        const [result] = await connection.query(
             `INSERT INTO users (email, first_name, last_name, user_type, status, password_hash)
              VALUES (?, ?, ?, ?, 'active', ?)`,
             [email, first_name, last_name, user_type, passwordHash]
         );
+
+        await connection.commit();
 
         const insertResult = result as any;
 
@@ -155,8 +161,11 @@ export const createUser = async (req: Request, res: Response): Promise<void> => 
             user: (users as any[])[0] as UserResponse
         });
     } catch (error) {
+        await connection.rollback();
         console.error(error);
         res.status(500).json({ error: 'Greška na serveru' });
+    }finally {
+        connection.release();
     }
 };
 
@@ -185,23 +194,29 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
         return;
     }
 
+    const connection = await pool.getConnection();
+
     try {
-        const [users] = await pool.query('SELECT id FROM users WHERE id = ?', [id]);
+
+        await connection.beginTransaction();
+        const [users] = await connection.query('SELECT id FROM users WHERE id = ?', [id]);
         const userRows = users as any[];
 
         if (userRows.length === 0) {
+            await connection.rollback();
             res.status(404).json({ error: 'Korisnik nije pronađen' });
             return;
         }
 
         if (email) {
-            const [existingUsers] = await pool.query(
+            const [existingUsers] = await connection.query(
                 'SELECT id FROM users WHERE email = ? AND id != ?',
                 [email, id]
             );
             const existingRows = existingUsers as any[];
 
             if (existingRows.length > 0) {
+                await connection.rollback();
                 res.status(409).json({ error: 'Email je već zauzet' });
                 return;
             }
@@ -233,10 +248,12 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
 
         values.push(id);
 
-        await pool.query(
+        await connection.query(
             `UPDATE users SET ${fields.join(', ')} WHERE id = ?`,
             values
         );
+
+        await connection.commit();
 
         const [updatedUsers] = await pool.query(
             `SELECT id, email, first_name, last_name, user_type, status
@@ -251,6 +268,8 @@ export const updateUser = async (req: Request, res: Response): Promise<void> => 
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška na serveru' });
+    }finally {
+        connection.release();
     }
 };
 
@@ -281,6 +300,20 @@ export const deleteUser = async (req: Request, res: Response): Promise<void> => 
         await pool.query('DELETE FROM users WHERE id = ?', [id]);
 
         res.json({ success: true, message: 'Korisnik je uspešno obrisan' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Greška na serveru' });
+    }
+};
+
+// Dohvati sve korisnike (samo admin)
+export const getAllUsers = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const [users] = await pool.query(
+            `SELECT id, email, first_name, last_name, user_type, status FROM users`
+        );
+
+        res.json(users);
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška na serveru' });

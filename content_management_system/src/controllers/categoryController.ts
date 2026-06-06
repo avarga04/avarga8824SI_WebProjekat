@@ -149,38 +149,47 @@ export const updateCategory = async (req: Request, res: Response): Promise<void>
 // obrisi kategoriju
 export const deleteCategory = async (req: Request, res: Response): Promise<void> => {
     const { id } = req.params;
+
+    const connection = await pool.getConnection();
     
     try {
-        const [existing] = await pool.query(
+
+        await connection.beginTransaction();
+        const [existing] = await connection.query(
             'SELECT id FROM categories WHERE id = ?',
             [id]
         );
         
         const existingRows = existing as any[];
         if (existingRows.length === 0) {
+            await connection.rollback();
             res.status(404).json({ error: 'Kategorija nije pronađena' });
             return;
         }
         
-        const [newsCount] = await pool.query(
+        const [newsCount] = await connection.query(
             'SELECT COUNT(*) as count FROM news WHERE category_id = ?',
             [id]
         );
         
         const countRows = newsCount as any[];
         if (countRows[0].count > 0) {
+            await connection.rollback();
             res.status(400).json({
                 error: 'Ne možete obrisati kategoriju koja sadrži vesti. Prvo obrišite vesti u ovoj kategoriji.'
             });
             return;
         }
         
-        await pool.query('DELETE FROM categories WHERE id = ?', [id]);
+        await connection.query('DELETE FROM categories WHERE id = ?', [id]);
+        await connection.commit();
         
         res.json({ success: true, message: 'Kategorija uspešno obrisana' });
         
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška pri brisanju kategorije' });
+    }finally {
+        connection.release();
     }
 };

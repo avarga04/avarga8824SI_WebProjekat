@@ -72,14 +72,13 @@ export const getAllNews = async (req: Request, res: Response): Promise<void> => 
 // dohvati jednu vest 
 export const getNewsById = async (req: Request, res: Response): Promise<void> => {
     const id = req.params.id as string;
+    const sessionId = req.cookies.session_id || req.headers['x-session-id'] || `session_${Date.now()}_${Math.random()}`
     
     try {
         const [news] = await pool.query(
             `SELECT n.*, 
                     u.id as author_id, u.first_name, u.last_name,
-                    c.id as category_id, c.name as category_name, c.description as category_description,
-                    (SELECT COUNT(*) FROM news_reactions WHERE news_id = n.id AND reaction_type = 'like') as like_count,
-                    (SELECT COUNT(*) FROM news_reactions WHERE news_id = n.id AND reaction_type = 'dislike') as dislike_count
+                    c.id as category_id, c.name as category_name, c.description as category_description
              FROM news n
              JOIN users u ON n.author_id = u.id
              JOIN categories c ON n.category_id = c.id
@@ -104,7 +103,16 @@ export const getNewsById = async (req: Request, res: Response): Promise<void> =>
         );
         
         newsItem.tags = tags;
-        
+
+        const [reaction] = await pool.query(
+            'SELECT reaction_type FROM news_reactions WHERE news_id = ? AND session_id = ?',
+            [id, sessionId]
+        );
+
+        const reactionRows = reaction as any[];
+
+        newsItem.user_reaction = reactionRows.length > 0 ? reactionRows[0].reaction_type : null;
+
         res.json(newsItem);
     } catch (error) {
         console.error(error);
@@ -114,9 +122,18 @@ export const getNewsById = async (req: Request, res: Response): Promise<void> =>
 
 // dohvati najcitanije vesti 
 export const getMostReadNews = async (req: Request, res: Response): Promise<void> => {
+    const page = parseInt(req.query.page as string || '1');
     const limit = parseInt(req.query.limit as string || '10');
+    const offset = (page - 1) * limit;
     
     try {
+        const [countResult] = await pool.query(
+            `SELECT COUNT(*) as total
+             FROM news n
+             WHERE n.published_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`
+        );
+        const total = (countResult as any[])[0].total;
+
         const [news] = await pool.query(
             `SELECT n.*, 
                     CONCAT(u.first_name, ' ', u.last_name) as author_name,
@@ -127,11 +144,17 @@ export const getMostReadNews = async (req: Request, res: Response): Promise<void
              JOIN categories c ON n.category_id = c.id
              WHERE n.published_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
              ORDER BY n.views DESC
-             LIMIT ?`,
-            [limit]
+             LIMIT ? OFFSET ?`,
+            [limit, offset]
         );
         
-        res.json(news);
+        res.json({
+            data: news,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit)
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška pri učitavanju najčitanijih vesti' });
@@ -140,9 +163,17 @@ export const getMostReadNews = async (req: Request, res: Response): Promise<void
 
 // dohvati najnovije vesti 
 export const getLatestNews = async (req: Request, res: Response): Promise<void> => {
+    const page = parseInt(req.query.page as string || '1');
     const limit = parseInt(req.query.limit as string || '10'); 
+    const offset = (page - 1) * limit;
     
     try {
+        const [countResult] = await pool.query(
+            `SELECT COUNT(*) as total
+             FROM news n`
+        );
+        const total = (countResult as any[])[0].total;
+
         const [news] = await pool.query(
             `SELECT n.*, 
                     CONCAT(u.first_name, ' ', u.last_name) as author_name,
@@ -153,11 +184,17 @@ export const getLatestNews = async (req: Request, res: Response): Promise<void> 
              JOIN users u ON n.author_id = u.id
              JOIN categories c ON n.category_id = c.id
              ORDER BY n.published_at DESC
-             LIMIT ?`,
-            [limit]
+             LIMIT ? OFFSET ?`,
+            [limit, offset]
         );
         
-        res.json(news);
+        res.json({
+            data: news,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit)
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška pri učitavanju najnovijih vesti' });
@@ -350,16 +387,21 @@ export const createNews = async (req: Request, res: Response): Promise<void> => 
         res.status(400).json({ error: 'Kategorija je obavezna' });
         return;
     }
+
+    const connection = await pool.getConnection();
     
     try {
+
+        await connection.beginTransaction();
         // gledamo da li kategorija postoji
-        const [categoryExists] = await pool.query('SELECT id FROM categories WHERE id = ?', [category_id]);
+        const [categoryExists] = await connection.query('SELECT id FROM categories WHERE id = ?', [category_id]);
         if ((categoryExists as any[]).length === 0) {
+            await connection.rollback();
             res.status(400).json({ error: 'Kategorija ne postoji' });
             return;
         }
         
-        const [result] = await pool.query(
+        const [result] = await connection.query(
             'INSERT INTO news (title, content, author_id, category_id) VALUES (?, ?, ?, ?)',
             [title.trim(), content.trim(), author_id, category_id]
         );
@@ -373,24 +415,26 @@ export const createNews = async (req: Request, res: Response): Promise<void> => 
                 const tagNameTrimmed = tagName.trim().toLowerCase();
                 if (tagNameTrimmed === '') continue;
                 
-                let [tagRows] = await pool.query('SELECT id FROM tags WHERE name = ?', [tagNameTrimmed]);
+                let [tagRows] = await connection.query('SELECT id FROM tags WHERE name = ?', [tagNameTrimmed]);
                 let tagRowsArray = tagRows as any[];
                 let tagId;
                 
                 if (tagRowsArray.length === 0) {
-                    const [newTag] = await pool.query('INSERT INTO tags (name) VALUES (?)', [tagNameTrimmed]);
+                    const [newTag] = await connection.query('INSERT INTO tags (name) VALUES (?)', [tagNameTrimmed]);
                     tagId = (newTag as any).insertId;
                 } else {
                     tagId = tagRowsArray[0].id;
                 }
                 
                 // ovde bsada vezujemo vest i tag u many-to-many tabeli
-                await pool.query(
+                await connection.query(
                     'INSERT INTO news_tags (news_id, tag_id) VALUES (?, ?)',
                     [newsId, tagId]
                 );
             }
         }
+
+        await connection.commit();
         
         // vracamo kreiranu vest
         const [newNews] = await pool.query(
@@ -406,8 +450,11 @@ export const createNews = async (req: Request, res: Response): Promise<void> => 
         
         res.status(201).json((newNews as any[])[0]);
     } catch (error) {
+        await connection.rollback();
         console.error(error);
         res.status(500).json({ error: 'Greška pri kreiranju vesti' });
+    }finally {
+        connection.release();
     }
 };
 
@@ -416,8 +463,22 @@ export const updateNews = async (req: Request, res: Response): Promise<void> => 
     const authReq = req as AuthenticatedRequest;
     const id = authReq.params.id as string;
     const { title, content, category_id, tags }: UpdateNewsRequest = authReq.body;
+
+    const connection = await pool.getConnection();
     
     try {        
+
+        await connection.beginTransaction();
+
+        const [newsRows] = await connection.query('SELECT author_id FROM news WHERE id = ?', [id]);
+        const newsArray = newsRows as any[];
+        
+        if (newsArray.length === 0) {
+            await connection.rollback();
+            res.status(404).json({ error: 'Vest nije pronađena' });
+            return;
+        }
+
         const updates: string[] = [];
         const values: any[] = [];
         
@@ -436,7 +497,7 @@ export const updateNews = async (req: Request, res: Response): Promise<void> => 
         
         if (updates.length > 0) {
             values.push(id);
-            await pool.query(
+            await connection.query(
                 `UPDATE news SET ${updates.join(', ')} WHERE id = ?`,
                 values
             );
@@ -445,29 +506,31 @@ export const updateNews = async (req: Request, res: Response): Promise<void> => 
         // azuriraj tagove ako su poslati
         if (tags) {
             //prvo cemo da obrisemo tagove koji postoje pa cemo dodati nove, pa i ako su vec postojali opet cemo ih dodati
-            await pool.query('DELETE FROM news_tags WHERE news_id = ?', [id]);
+            await connection.query('DELETE FROM news_tags WHERE news_id = ?', [id]);
             
             for (const tagName of tags) {
                 const tagNameTrimmed = tagName.trim().toLowerCase();
                 if (tagNameTrimmed === '') continue;
                 
-                let [tagRows] = await pool.query('SELECT id FROM tags WHERE name = ?', [tagNameTrimmed]);
+                let [tagRows] = await connection.query('SELECT id FROM tags WHERE name = ?', [tagNameTrimmed]);
                 let tagRowsArray = tagRows as any[];
                 let tagId;
                 
                 if (tagRowsArray.length === 0) {
-                    const [newTag] = await pool.query('INSERT INTO tags (name) VALUES (?)', [tagNameTrimmed]);
+                    const [newTag] = await connection.query('INSERT INTO tags (name) VALUES (?)', [tagNameTrimmed]);
                     tagId = (newTag as any).insertId;
                 } else {
                     tagId = tagRowsArray[0].id;
                 }
                 
-                await pool.query(
+                await connection.query(
                     'INSERT INTO news_tags (news_id, tag_id) VALUES (?, ?)',
                     [id, tagId]
                 );
             }
         }
+
+        await connection.commit();
         
         const [updatedNews] = await pool.query(
             `SELECT n.*, 
@@ -482,8 +545,11 @@ export const updateNews = async (req: Request, res: Response): Promise<void> => 
         
         res.json((updatedNews as any[])[0]);
     } catch (error) {
+        await connection.rollback();
         console.error(error);
         res.status(500).json({ error: 'Greška pri izmeni vesti' });
+    }finally {
+        connection.release();
     }
 };
 
@@ -499,5 +565,62 @@ export const deleteNews = async (req: Request, res: Response): Promise<void> => 
     } catch (error) {
         console.error(error);
         res.status(500).json({ error: 'Greška pri brisanju vesti' });
+    }
+};
+
+// dohvati vesti po kategoriji 
+export const getNewsByCategory = async (req: Request, res: Response): Promise<void> => {
+    const categoryIdParam = req.params.categoryId as string;
+    // podrzavamo pagination i search kao u getAllNews
+    const page = parseInt(req.query.page as string || '1');
+    const limit = parseInt(req.query.limit as string || '10');
+    const search = req.query.search as string || '';
+    const offset = (page - 1) * limit;
+
+    try {
+        let query = `
+            SELECT n.*, 
+                   CONCAT(u.first_name, ' ', u.last_name) as author_name,
+                   c.name as category_name,
+                   (SELECT COUNT(*) FROM comments WHERE news_id = n.id) as comment_count
+            FROM news n
+            JOIN users u ON n.author_id = u.id
+            JOIN categories c ON n.category_id = c.id
+            WHERE n.category_id = ?
+        `;
+
+        const params: any[] = [categoryIdParam];
+
+        if (search) {
+            query += ` AND (n.title LIKE ? OR n.content LIKE ?)`;
+            params.push(`%${search}%`, `%${search}%`);
+        }
+
+        query += ` ORDER BY n.published_at DESC LIMIT ? OFFSET ?`;
+        params.push(limit, offset);
+
+        const [news] = await pool.query(query, params);
+
+        let countQuery = `SELECT COUNT(*) as total FROM news n WHERE n.category_id = ?`;
+        const countParams: any[] = [categoryIdParam];
+
+        if (search) {
+            countQuery += ` AND (n.title LIKE ? OR n.content LIKE ?)`;
+            countParams.push(`%${search}%`, `%${search}%`);
+        }
+
+        const [totalResult] = await pool.query(countQuery, countParams);
+        const total = (totalResult as any[])[0].total;
+
+        res.json({
+            data: news,
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit)
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Greška pri učitavanju vesti po kategoriji' });
     }
 };

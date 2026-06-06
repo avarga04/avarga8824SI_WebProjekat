@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
     getAllNews,
+    getNewsByCategory,
     getNewsById,
     getMostReadNews,
     getLatestNews,
@@ -17,7 +18,7 @@ import { authMiddleware, ownerOrAdminMiddleware } from '../middleware/auth';
 const router = Router();
 
 // javne rute
-router.get('/', getAllNews);
+router.get('/category/:categoryId', getNewsByCategory);
 router.get('/most-read', getMostReadNews);
 router.get('/latest', getLatestNews);
 router.get('/:id', getNewsById);
@@ -27,6 +28,7 @@ router.post('/:id/like', likeNews);
 router.post('/:id/dislike', dislikeNews);
 
 // zaštićene rute (zahtevaju login)
+router.get('/', authMiddleware,getAllNews);
 router.post('/', authMiddleware, createNews);
 router.put('/:id', authMiddleware, ownerOrAdminMiddleware, updateNews);
 router.delete('/:id', authMiddleware, ownerOrAdminMiddleware, deleteNews);
